@@ -113,9 +113,11 @@ public:
    * \param[in] proxy An indirection retained for function signature deduction.
    * \return a mocking_utils::Patch instance.
    */
-  explicit Patch(const std::string & target, std::function<ReturnT(ArgTs...)>)
+  explicit Patch(
+    const std::string & target, std::function<ReturnT(ArgTs...)> proxy)
   : target_(target)
   {
+    (void)proxy;
   }
 
   // Copy construction and assignment are disabled.
@@ -196,8 +198,8 @@ auto make_patch(const std::string & target, std::function<SignatureT> proxy)
 
 /// Define a dummy operator `op` for a given `type`.
 /**
- * Useful to enable patching functions that take arguments whose types
- * do not define basic comparison operators, as required by Mimick.
+ * Retained for compatibility with tests that define comparison operators
+ * for types passed through the mocking utility.
 */
 #define MOCKING_UTILS_BOOL_OPERATOR_RETURNS_FALSE(type_, op) \
   template<typename T> \
