@@ -1,0 +1,41 @@
+name: Validate issue 2488 fix
+
+on:
+  pull_request:
+    branches:
+      - ci/validate-2488-base
+
+jobs:
+  clang-rclcpp:
+    runs-on: ubuntu-latest
+    container:
+      image: rostooling/setup-ros-docker:ubuntu-resolute-ros-rolling-ros-base-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Clang and dependencies
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y clang
+          source /opt/ros/rolling/setup.bash
+          rosdep install --from-paths rclcpp --ignore-src --rosdistro rolling -r -y
+      - name: Build rclcpp with Clang warning promoted to error
+        shell: bash
+        run: |
+          source /opt/ros/rolling/setup.bash
+          colcon build --packages-select rclcpp --event-handlers console_direct+ --cmake-args -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ '-DCMAKE_CXX_FLAGS=-Werror=ordered-compare-function-pointers'
+      - name: Run test_utilities
+        shell: bash
+        run: |
+          source /opt/ros/rolling/setup.bash
+          source install/setup.bash
+          colcon test --packages-select rclcpp --event-handlers console_direct+ --ctest-args -R '^test_utilities$' --output-on-failure
+          colcon test-result --verbose
+      - name: Run all rclcpp tests
+        shell: bash
+        run: |
+          source /opt/ros/rolling/setup.bash
+          source install/setup.bash
+          colcon test --packages-select rclcpp --event-handlers console_direct+ --ctest-args --output-on-failure
+          colcon test-result --verbose
