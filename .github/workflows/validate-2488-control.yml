@@ -1,0 +1,43 @@
+name: Control regression checks for issue 2488
+
+on:
+  pull_request:
+    branches:
+      - ci/validate-2488-base
+
+jobs:
+  rolling-control:
+    runs-on: ubuntu-latest
+    container:
+      image: rostooling/setup-ros-docker:ubuntu-resolute-ros-rolling-ros-base-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          source /opt/ros/rolling/setup.bash
+          if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then rosdep init; fi
+          rosdep update
+          rosdep install --from-paths rclcpp --ignore-src --rosdistro rolling -r -y
+
+      - name: Configure and build relevant tests
+        shell: bash
+        run: |
+          source /opt/ros/rolling/setup.bash
+          colcon build \
+            --packages-select rclcpp \
+            --cmake-target test_client \
+            --event-handlers console_direct+ \
+            --cmake-args -DBUILD_TESTING=ON
+          cmake --build build/rclcpp --target test_subscription test_subscription_options --parallel 2
+
+      - name: Run the three previously failing test targets
+        shell: bash
+        run: |
+          source /opt/ros/rolling/setup.bash
+          source install/setup.bash
+          ctest --test-dir build/rclcpp \
+            -R '^(test_client|test_subscription|test_subscription_options)$' \
+            --output-on-failure
