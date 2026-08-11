@@ -386,8 +386,6 @@ template<size_t ID, typename ReturnT, typename ... ArgTs>
 class Patch<ID, ReturnT(ArgTs...)>
 {
 public:
-  using mock_type = typename PatchTraits<ID, ReturnT(ArgTs...)>::mock_type;
-
   /// Construct a patch.
   /**
    * \param[in] target Symbol target string, using Mimick syntax
@@ -395,14 +393,14 @@ public:
    *   binary, "lib:library_name" to target a given library, "file:path/to/library"
    *   to target a given file, or "sym:other_symbol" to target the first library
    *   that defines said symbol.
-   * \param[in] proxy An indirection to call the target function.
-   *   This indirection must ensure this call goes through the function's
-   *   trampoline, as setup by the dynamic linker.
+   * \param[in] proxy An indirection retained for function signature deduction.
    * \return a mocking_utils::Patch instance.
    */
-  explicit Patch(const std::string & target, std::function<ReturnT(ArgTs...)> proxy)
-  : target_(target), proxy_(proxy)
+  explicit Patch(
+    const std::string & target, std::function<ReturnT(ArgTs...)> proxy)
+  : target_(target)
   {
+    (void)proxy;
   }
 
   // Copy construction and assignment are disabled.
@@ -446,11 +444,6 @@ public:
   }
 
 private:
-  // Helper for template parameter pack expansion using `mmk_any`
-  // macro as pattern.
-  template<typename T>
-  T any() {return mmk_any(T);}
-
   void replace_with(std::function<ReturnT(ArgTs...)> replacement)
   {
     if (mock_) {
@@ -458,15 +451,13 @@ private:
     }
     auto type_erased_trampoline =
       reinterpret_cast<mmk_fn>(prepare_trampoline<ID>(replacement));
-    auto MMK_MANGLE(mock_type, create) =
-      PatchTraits<ID, ReturnT(ArgTs...)>::MMK_MANGLE(mock_type, create);
-    mock_ = mmk_mock(target_.c_str(), mock_type);
-    mmk_when(proxy_(any<ArgTs>()...), .then_call = type_erased_trampoline);
+    struct mmk_mock_options options {};
+    options.sentinel_ = 1;
+    mock_ = mmk_mock_create_internal(target_.c_str(), type_erased_trampoline, options);
   }
 
-  mock_type mock_{nullptr};
+  mmk_fn mock_{nullptr};
   std::string target_;
-  std::function<ReturnT(ArgTs...)> proxy_;
 };
 
 /// Make a patch for a `target` function.
@@ -474,7 +465,7 @@ private:
  * Useful for type deduction during \ref mocking_utils::Patch construction.
  *
  * \param[in] target Symbol target string, using Mimick syntax.
- * \param[in] proxy An indirection to call the target function.
+ * \param[in] proxy An indirection used for function signature deduction.
  * \return a mocking_utils::Patch instance.
  *
  * \tparam ID Numerical identifier for this patch. Ought to be unique.
@@ -490,8 +481,8 @@ auto make_patch(const std::string & target, std::function<SignatureT> proxy)
 
 /// Define a dummy operator `op` for a given `type`.
 /**
- * Useful to enable patching functions that take arguments whose types
- * do not define basic comparison operators, as required by Mimick.
+ * Retained for compatibility with tests that define comparison operators
+ * for types passed through the mocking utility.
 */
 #define MOCKING_UTILS_BOOL_OPERATOR_RETURNS_FALSE(type_, op) \
   template<typename T> \
@@ -509,7 +500,7 @@ auto make_patch(const std::string & target, std::function<SignatureT> proxy)
 
 /// A transparent forwarding proxy to a given `function`.
 /**
- * Useful to ensure a call to `function` goes through its trampoline.
+ * Useful for function signature deduction while preparing a patch.
  */
 #define MOCKING_UTILS_PATCH_PROXY(function) \
   [] (auto && ... args)->decltype(auto) { \
