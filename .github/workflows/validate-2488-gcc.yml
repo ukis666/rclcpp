@@ -1,0 +1,40 @@
+name: Focused GCC validation issue 2488
+
+on:
+  pull_request:
+    branches:
+      - ci/validate-2488-base
+
+jobs:
+  focused-gcc-test:
+    runs-on: ubuntu-latest
+    container:
+      image: rostooling/setup-ros-docker:ubuntu-resolute-ros-rolling-ros-base-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        shell: bash
+        run: |
+          apt-get update
+          source /opt/ros/rolling/setup.bash
+          if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then rosdep init; fi
+          rosdep update
+          rosdep install --from-paths rclcpp --ignore-src --rosdistro rolling -r -y
+      - name: Configure and build test_utilities with GCC
+        shell: bash
+        run: |
+          source /opt/ros/rolling/setup.bash
+          colcon build \
+            --packages-select rclcpp \
+            --cmake-target test_utilities \
+            --event-handlers console_direct+ \
+            --cmake-args \
+              -DBUILD_TESTING=ON \
+              -DCMAKE_C_COMPILER=gcc \
+              -DCMAKE_CXX_COMPILER=g++
+      - name: Run test_utilities through CTest
+        shell: bash
+        run: |
+          source /opt/ros/rolling/setup.bash
+          ctest --test-dir build/rclcpp -R '^test_utilities$' --output-on-failure
