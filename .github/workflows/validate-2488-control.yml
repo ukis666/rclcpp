@@ -17,6 +17,7 @@ jobs:
       - name: Install dependencies
         shell: bash
         run: |
+          apt-get update
           source /opt/ros/rolling/setup.bash
           if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then rosdep init; fi
           rosdep update
