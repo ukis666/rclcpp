@@ -20,6 +20,10 @@ jobs:
           apt-get update
           apt-get install -y clang
           source /opt/ros/rolling/setup.bash
+          if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
+            rosdep init
+          fi
+          rosdep update
           rosdep install --from-paths rclcpp --ignore-src --rosdistro rolling -r -y
 
       - name: Build rclcpp with Clang warning promoted to error
@@ -51,7 +55,6 @@ jobs:
         run: |
           source /opt/ros/rolling/setup.bash
           source install/setup.bash
-          rm -rf build/rclcpp/Testing
           colcon test \
             --packages-select rclcpp \
             --event-handlers console_direct+ \
