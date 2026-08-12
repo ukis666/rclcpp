@@ -1,0 +1,83 @@
+name: Apply public stub revision for issue 2488
+
+on:
+  push:
+    branches:
+      - fix/clang-function-pointer-warning-2488-public-stub
+    paths:
+      - .github/workflows/apply-public-stub-2488.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-revision:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/clang-function-pointer-warning-2488-public-stub
+          fetch-depth: 0
+      - name: Apply reviewer-requested public stub API revision
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('rclcpp/test/mocking_utils/patch.hpp')
+          text = path.read_text()
+
+          text = text.replace(
+              '#include <functional>\n#include <string>',
+              '#include <functional>\n#include <stdexcept>\n#include <string>')
+
+          text = text.replace(
+              '    mock_ = other.mock_;\n    other.mock_ = nullptr;',
+              '    stub_ = other.stub_;\n    other.stub_ = MMK_STUB_INVALID;')
+
+          text = text.replace(
+              '    if (mock_) {\n      mmk_reset(mock_);\n    }\n    mock_ = other.mock_;\n    other.mock_ = nullptr;',
+              '    if (stub_ != MMK_STUB_INVALID) {\n      mmk_stub_destroy(stub_);\n    }\n    stub_ = other.stub_;\n    other.stub_ = MMK_STUB_INVALID;')
+
+          text = text.replace(
+              '    if (mock_) {\n      mmk_reset(mock_);\n    }\n  }\n\n  /// Inject a @p replacement',
+              '    if (stub_ != MMK_STUB_INVALID) {\n      mmk_stub_destroy(stub_);\n    }\n  }\n\n  /// Inject a @p replacement')
+
+          old = '''    if (mock_) {
+      throw std::logic_error("Cannot configure patch more than once");
+    }
+    auto type_erased_trampoline =
+      reinterpret_cast<mmk_fn>(prepare_trampoline<ID>(replacement));
+    struct mmk_mock_options options {};
+    options.sentinel_ = 1;
+    mock_ = mmk_mock_create_internal(target_.c_str(), type_erased_trampoline, options);
+  }
+
+  mmk_fn mock_{nullptr};'''
+          new = '''    if (stub_ != MMK_STUB_INVALID) {
+      throw std::logic_error("Cannot configure patch more than once");
+    }
+    auto type_erased_trampoline =
+      reinterpret_cast<mmk_fn>(prepare_trampoline<ID>(replacement));
+    stub_ = mmk_stub_create(target_.c_str(), type_erased_trampoline, nullptr);
+    if (stub_ == MMK_STUB_INVALID) {
+      throw std::runtime_error("Failed to patch symbol '" + target_ + "'");
+    }
+  }
+
+  struct mmk_stub * stub_{MMK_STUB_INVALID};'''
+          if old not in text:
+              raise RuntimeError('Expected replace_with block not found')
+          text = text.replace(old, new)
+
+          path.write_text(text)
+          PY
+
+          git diff --check
+          git diff -- rclcpp/test/mocking_utils/patch.hpp
+
+          git config user.name 'Ulaş'
+          git config user.email '36420486+ukis666@users.noreply.github.com'
+          git add rclcpp/test/mocking_utils/patch.hpp
+          git commit -s -m 'Use Mimick public stub API for unconditional patches'
+          git push origin HEAD:fix/clang-function-pointer-warning-2488-public-stub
