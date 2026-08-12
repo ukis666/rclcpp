@@ -1,0 +1,176 @@
+name: Source validate issue 2488
+
+on:
+  pull_request:
+    branches:
+      - ci/2488-public-stub-base
+
+permissions:
+  contents: write
+
+jobs:
+  source-validation:
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:26.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+    steps:
+      - name: Install bootstrap tools
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y ca-certificates git locales python3
+          locale-gen en_US.UTF-8
+
+      - name: Checkout validation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Apply reviewer-requested public stub API revision
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('rclcpp/test/mocking_utils/patch.hpp')
+          text = path.read_text()
+
+          if 'mmk_mock_create_internal' not in text:
+              print('Public-stub revision already applied')
+          else:
+              text = text.replace(
+                  '#include <functional>\n#include <string>',
+                  '#include <functional>\n#include <stdexcept>\n#include <string>')
+
+              text = text.replace(
+                  '    mock_ = other.mock_;\n    other.mock_ = nullptr;',
+                  '    stub_ = other.stub_;\n    other.stub_ = MMK_STUB_INVALID;')
+
+              text = text.replace(
+                  '    if (mock_) {\n      mmk_reset(mock_);\n    }\n    mock_ = other.mock_;\n    other.mock_ = nullptr;',
+                  '    if (stub_ != MMK_STUB_INVALID) {\n      mmk_stub_destroy(stub_);\n    }\n    stub_ = other.stub_;\n    other.stub_ = MMK_STUB_INVALID;')
+
+              text = text.replace(
+                  '    if (mock_) {\n      mmk_reset(mock_);\n    }\n  }\n\n  /// Inject a @p replacement',
+                  '    if (stub_ != MMK_STUB_INVALID) {\n      mmk_stub_destroy(stub_);\n    }\n  }\n\n  /// Inject a @p replacement')
+
+              old = '''    if (mock_) {
+      throw std::logic_error("Cannot configure patch more than once");
+    }
+    auto type_erased_trampoline =
+      reinterpret_cast<mmk_fn>(prepare_trampoline<ID>(replacement));
+    struct mmk_mock_options options {};
+    options.sentinel_ = 1;
+    mock_ = mmk_mock_create_internal(target_.c_str(), type_erased_trampoline, options);
+  }
+
+  mmk_fn mock_{nullptr};'''
+              new = '''    if (stub_ != MMK_STUB_INVALID) {
+      throw std::logic_error("Cannot configure patch more than once");
+    }
+    auto type_erased_trampoline =
+      reinterpret_cast<mmk_fn>(prepare_trampoline<ID>(replacement));
+    stub_ = mmk_stub_create(target_.c_str(), type_erased_trampoline, nullptr);
+    if (stub_ == MMK_STUB_INVALID) {
+      throw std::runtime_error("Failed to patch symbol '" + target_ + "'");
+    }
+  }
+
+  struct mmk_stub * stub_{MMK_STUB_INVALID};'''
+              if old not in text:
+                  raise RuntimeError('Expected replace_with block not found')
+              text = text.replace(old, new)
+              path.write_text(text)
+          PY
+
+          git diff --check
+          if git diff --quiet -- rclcpp/test/mocking_utils/patch.hpp; then
+            echo 'No patch update required'
+          else
+            git config user.name 'Ulaş'
+            git config user.email '36420486+ukis666@users.noreply.github.com'
+            git add rclcpp/test/mocking_utils/patch.hpp
+            git commit -s -m 'Use Mimick public stub API for unconditional patches'
+            git push origin HEAD:${HEAD_BRANCH}
+          fi
+
+          if grep -q 'mmk_mock_create_internal\|sentinel_' rclcpp/test/mocking_utils/patch.hpp; then
+            echo 'Internal Mimick API still present' >&2
+            exit 1
+          fi
+
+      - name: Configure ROS 2 source-build environment
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y software-properties-common curl
+          add-apt-repository universe
+          apt-get update
+
+          ROS_APT_SOURCE_VERSION=$(curl -s https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | grep -F 'tag_name' | awk -F'"' '{print $4}')
+          curl -L -o /tmp/ros2-apt-source.deb "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.$(. /etc/os-release && echo ${UBUNTU_CODENAME:-${VERSION_CODENAME}})_all.deb"
+          dpkg -i /tmp/ros2-apt-source.deb
+
+          apt-get update
+          apt-get install -y \
+            clang \
+            python3-mypy \
+            python3-pip \
+            python3-pytest \
+            python3-pytest-cov \
+            python3-pytest-mock \
+            python3-pytest-repeat \
+            python3-pytest-rerunfailures \
+            python3-pytest-runner \
+            python3-pytest-timeout \
+            ros-dev-tools
+
+      - name: Import ROS 2 Rolling sources
+        shell: bash
+        run: |
+          mkdir -p /tmp/ros2_rolling/src
+          cd /tmp/ros2_rolling
+          vcs import --input https://raw.githubusercontent.com/ros2/ros2/rolling/ros2.repos src
+          rm -rf src/rclcpp
+          git clone --depth 1 --branch "${HEAD_BRANCH}" https://github.com/ukis666/rclcpp.git src/rclcpp
+
+      - name: Install source workspace dependencies
+        shell: bash
+        run: |
+          rosdep init
+          rosdep update
+          cd /tmp/ros2_rolling
+          rosdep install --from-paths src --ignore-src -y --skip-keys "fastcdr rti-connext-dds-7.7.0 urdfdom_headers"
+          colcon mixin add default https://github.com/colcon/colcon-mixin-repository/raw/master/index.yaml
+          colcon mixin update default
+
+      - name: Build source dependencies with Clang
+        shell: bash
+        run: |
+          cd /tmp/ros2_rolling
+          export CC=clang
+          export CXX=clang++
+          colcon build --symlink-install --mixin release --packages-up-to rclcpp --event-handlers console_cohesion+
+
+      - name: Rebuild rclcpp with original warning promoted to error
+        shell: bash
+        run: |
+          cd /tmp/ros2_rolling
+          . install/local_setup.bash
+          export CC=clang
+          export CXX=clang++
+          colcon build --symlink-install --mixin release --packages-select rclcpp --cmake-force-configure --cmake-args '-DCMAKE_CXX_FLAGS=-Werror=ordered-compare-function-pointers' --event-handlers console_cohesion+
+
+      - name: Run all rclcpp tests from source workspace
+        shell: bash
+        run: |
+          cd /tmp/ros2_rolling
+          . install/local_setup.bash
+          colcon test --packages-select rclcpp --event-handlers console_cohesion+
+          colcon test-result --verbose
